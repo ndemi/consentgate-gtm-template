@@ -94,9 +94,10 @@ const makeInteger = require('makeInteger');
 const encodeUriComponent = require('encodeUriComponent');
 const Math = require('Math');
 const getTimestampMillis = require('getTimestampMillis');
+const callInWindow = require('callInWindow');
 
-// Kod ConsentGate jest juz wpisany w strone: drugi raz go nie wczytujemy, tylko zostawiamy slad,
-// zeby panel ostrzegl o podwojnej instalacji.
+// The ConsentGate code is already on the page: do not load it twice, only leave a flag
+// so the ConsentGate panel can warn about the double installation.
 if (copyFromWindow('ConsentGate')) {
   setInWindow('__cgDup', 1, true);
   data.gtmOnSuccess();
@@ -133,10 +134,10 @@ setDefaultConsentState(all);
 if (data.adsDataRedaction) gtagSet('ads_data_redaction', true);
 if (data.urlPassthrough) gtagSet('url_passthrough', true);
 
-// Decyzja z poprzedniej wizyty (plik cookie cg_consent, format 1.id.czas.wersja.bity.wyslano):
-// tagi na tej stronie od razu widza zgode, bez czekania na pobranie okna zgod.
-// Okno zgod sprawdzi jeszcze waznosc decyzji i w razie potrzeby ja cofnie.
-// Decyzja starsza niz rok jest pomijana nawet wtedy, gdyby okno zgod sie nie wczytalo.
+// Decision from an earlier visit (cookie cg_consent, format 1.id.time36.version.bits.sent):
+// tags on this page see it at once, without waiting for the consent window to load.
+// The window re-checks the decision and revokes it if it is no longer valid.
+// A decision older than one year is ignored even if the window fails to load.
 const base36 = function (s) {
   const digits = '0123456789abcdefghijklmnopqrstuvwxyz';
   let n = 0;
@@ -158,9 +159,19 @@ if (raw) {
   }
 }
 
-// Okno zgod wie, ze stan domyslny ustawil szablon.
+// Each later decision of the visitor goes to Google tags through the Tag Manager consent API.
+const onUserConsent = function (c) {
+  const v = function (on) { return on ? 'granted' : 'denied'; };
+  updateConsentState(state(v(c.functional), v(c.analytics), v(c.marketing)));
+};
+const onLoaded = function () {
+  callInWindow('ConsentGate.onChange', onUserConsent);
+  data.gtmOnSuccess();
+};
+
+// Tells the consent window that this template has already set the defaults.
 setInWindow('__cgTpl', true, true);
-injectScript('https://cdn.consentgate.eu/s/' + encodeUriComponent(data.siteId) + '.js', data.gtmOnSuccess, data.gtmOnFailure, 'consentgate');
+injectScript('https://cdn.consentgate.eu/s/' + encodeUriComponent(data.siteId) + '.js', onLoaded, data.gtmOnFailure, 'consentgate');
 
 
 ___WEB_PERMISSIONS___
@@ -222,7 +233,8 @@ ___WEB_PERMISSIONS___
             "listItem": [
               { "type": 3, "mapKey": [{ "type": 1, "string": "key" }, { "type": 1, "string": "read" }, { "type": 1, "string": "write" }, { "type": 1, "string": "execute" }], "mapValue": [{ "type": 1, "string": "__cgTpl" }, { "type": 8, "boolean": true }, { "type": 8, "boolean": true }, { "type": 8, "boolean": false }] },
               { "type": 3, "mapKey": [{ "type": 1, "string": "key" }, { "type": 1, "string": "read" }, { "type": 1, "string": "write" }, { "type": 1, "string": "execute" }], "mapValue": [{ "type": 1, "string": "__cgDup" }, { "type": 8, "boolean": true }, { "type": 8, "boolean": true }, { "type": 8, "boolean": false }] },
-              { "type": 3, "mapKey": [{ "type": 1, "string": "key" }, { "type": 1, "string": "read" }, { "type": 1, "string": "write" }, { "type": 1, "string": "execute" }], "mapValue": [{ "type": 1, "string": "ConsentGate" }, { "type": 8, "boolean": true }, { "type": 8, "boolean": false }, { "type": 8, "boolean": false }] }
+              { "type": 3, "mapKey": [{ "type": 1, "string": "key" }, { "type": 1, "string": "read" }, { "type": 1, "string": "write" }, { "type": 1, "string": "execute" }], "mapValue": [{ "type": 1, "string": "ConsentGate" }, { "type": 8, "boolean": true }, { "type": 8, "boolean": false }, { "type": 8, "boolean": false }] },
+              { "type": 3, "mapKey": [{ "type": 1, "string": "key" }, { "type": 1, "string": "read" }, { "type": 1, "string": "write" }, { "type": 1, "string": "execute" }], "mapValue": [{ "type": 1, "string": "ConsentGate.onChange" }, { "type": 8, "boolean": false }, { "type": 8, "boolean": false }, { "type": 8, "boolean": true }] }
             ]
           }
         }
@@ -252,7 +264,20 @@ scenarios:
     mock('copyFromWindow', function () { return undefined; });
     mock('getCookieValues', function () { return []; });
     mock('injectScript', function (url, onSuccess) { onSuccess(); });
+    mock('callInWindow', function (name, listener) {
+      if (name === 'ConsentGate.onChange') listener({ functional: false, analytics: true, marketing: false });
+    });
     runCode(mockData);
+    assertApi('callInWindow').wasCalled();
+    assertApi('updateConsentState').wasCalledWith({
+      functionality_storage: 'denied',
+      personalization_storage: 'denied',
+      analytics_storage: 'granted',
+      ad_storage: 'denied',
+      ad_user_data: 'denied',
+      ad_personalization: 'denied',
+      security_storage: 'granted'
+    });
     assertApi('setDefaultConsentState').wasCalledWith({
       functionality_storage: 'denied',
       personalization_storage: 'denied',
@@ -263,7 +288,6 @@ scenarios:
       security_storage: 'granted',
       wait_for_update: 500
     });
-    assertApi('updateConsentState').wasNotCalled();
     assertApi('injectScript').wasCalled();
     assertApi('gtmOnSuccess').wasCalled();
 - name: Does not load the window twice when the code is already on the page
@@ -278,7 +302,7 @@ scenarios:
     mock('copyFromWindow', function () { return undefined; });
     mock('getTimestampMillis', function () { return 1800000000000; });
     mock('getCookieValues', function () { return ['1.id.mywoxha8.1.6.1']; });
-    mock('injectScript', function (url, onSuccess) { onSuccess(); });
+    mock('injectScript', function () {});
     runCode(mockData);
     assertApi('updateConsentState').wasCalledWith({
       functionality_storage: 'denied',
