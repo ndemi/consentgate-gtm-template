@@ -1,0 +1,5 @@
+homepage: "https://consentgate.eu"
+documentation: "https://consentgate.eu/en/guides/set-up-consent-window-in-google-tag-manager/"
+versions:
+  - sha: 9c391919523e728bb8a27508fc42eb3331e32f06
+    changeNotes: Initial release.
